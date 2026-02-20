@@ -1,0 +1,309 @@
+openapi: 3.0.3
+info:
+  title: PDF Analysis Service API
+  version: 1.0.0
+  description: API for retrieving user quota, extracting PDF metadata, and analyzing PDFs for summaries and actions.
+servers:
+  - url: http://10.0.2.2:8787
+security:
+  - bearerAuth: []
+paths:
+  /me:
+    get:
+      summary: Get current user and quota snapshot
+      operationId: getMe
+      responses:
+        '200':
+          description: Current user info and quota snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /pdf/meta:
+    post:
+      summary: Extract PDF metadata
+      description: No AI usage, only metadata extraction.
+      operationId: postPdfMeta
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PdfMetaRequest'
+      responses:
+        '200':
+          description: PDF metadata extracted successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PdfMetaResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+  /analyze-pdf:
+    post:
+      summary: Analyze PDF
+      description: Uses quota reserve -> analyze -> finalize logic.
+      operationId: postAnalyzePdf
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AnalyzePdfRequest'
+      responses:
+        '200':
+          description: PDF analyzed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalyzePdfResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          $ref: '#/components/responses/QuotaExceeded'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    ErrorCode:
+      type: string
+      enum:
+        - BAD_REQUEST
+        - UNAUTHORIZED
+        - QUOTA_EXCEEDED
+        - PAYLOAD_TOO_LARGE
+        - RATE_LIMITED
+        - SERVER_ERROR
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorCode'
+        detail:
+          type: string
+
+    User:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: string
+        plan:
+          type: string
+          nullable: true
+
+    QuotaPeriod:
+      type: object
+      required:
+        - start
+        - end
+      properties:
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+
+    QuotaSnapshot:
+      type: object
+      required:
+        - period
+        - used
+        - limit
+        - remaining
+      properties:
+        period:
+          $ref: '#/components/schemas/QuotaPeriod'
+        used:
+          type: number
+        limit:
+          type: number
+        remaining:
+          type: number
+
+    MeResponse:
+      type: object
+      required:
+        - user
+        - quota
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        quota:
+          $ref: '#/components/schemas/QuotaSnapshot'
+
+    PdfMetaRequest:
+      type: object
+      required:
+        - file
+      properties:
+        file:
+          type: string
+          format: binary
+
+    PdfMetaResponse:
+      type: object
+      required:
+        - filename
+        - bytes
+        - pages
+      properties:
+        filename:
+          type: string
+        bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        pages:
+          type: integer
+          minimum: 0
+        title:
+          type: string
+          nullable: true
+        author:
+          type: string
+          nullable: true
+
+    AnalyzeMode:
+      type: string
+      enum:
+        - summary_actions
+      default: summary_actions
+
+    AnalyzePdfRequest:
+      type: object
+      required:
+        - file
+      properties:
+        file:
+          type: string
+          format: binary
+        mode:
+          $ref: '#/components/schemas/AnalyzeMode'
+
+    ActionItem:
+      type: object
+      required:
+        - title
+      properties:
+        title:
+          type: string
+        owner:
+          type: string
+          nullable: true
+        due:
+          type: string
+          nullable: true
+
+    AnalyzeResult:
+      type: object
+      required:
+        - summary
+        - actions
+      properties:
+        summary:
+          type: string
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActionItem'
+
+    AnalyzePdfResponse:
+      type: object
+      required:
+        - job_id
+        - result
+      properties:
+        job_id:
+          type: string
+        result:
+          $ref: '#/components/schemas/AnalyzeResult'
+
+  responses:
+    BadRequest:
+      description: BAD_REQUEST
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: BAD_REQUEST
+            detail: Request payload is invalid.
+
+    Unauthorized:
+      description: UNAUTHORIZED
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: UNAUTHORIZED
+            detail: Authentication required.
+
+    QuotaExceeded:
+      description: QUOTA_EXCEEDED
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: QUOTA_EXCEEDED
+            detail: Monthly quota exceeded.
+
+    PayloadTooLarge:
+      description: PAYLOAD_TOO_LARGE
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: PAYLOAD_TOO_LARGE
+            detail: Uploaded file is too large.
+
+    RateLimited:
+      description: RATE_LIMITED
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: RATE_LIMITED
+            detail: Too many requests. Try again later.
+
+    ServerError:
+      description: SERVER_ERROR
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: SERVER_ERROR
+            detail: Internal server error.
