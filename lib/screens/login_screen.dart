@@ -1,31 +1,57 @@
 import 'dart:convert';
+import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import 'package:http/http.dart' as http;
 
 import '../auth/auth_state.dart';
-import '../auth/google_auth_service.dart';
+import '../auth/google_auth_service.dart' show kServerClientId;
 import '../ui/home_screen.dart';
 
 class LoginScreen extends StatelessWidget {
   LoginScreen({super.key});
 
-  final GoogleAuthService _googleAuthService = GoogleAuthService();
-  static const String _googleAuthUrl = 'http://10.0.2.2:8787/auth/google';
+  static const String _googleAuthUrl = 'https://pdf-backend-waba.onrender.com/auth/google';
 
   Future<void> _handleGoogleSignIn(BuildContext context) async {
     try {
-      final String? idToken = await _googleAuthService.signIn();
-      if (idToken == null) {
-        debugPrint('Google Sign-In failed or canceled (idToken is null).');
+      debugPrint('LOGIN: pressed');
+      final GoogleSignIn googleSignIn = GoogleSignIn(
+        scopes: const <String>['openid', 'email'],
+        serverClientId: kServerClientId,
+      );
+      debugPrint('LOGIN: before googleSignIn.signIn');
+      final GoogleSignInAccount? account = await googleSignIn.signIn();
+      debugPrint('LOGIN: after googleSignIn.signIn account=$account');
+      if (account == null) {
+        debugPrint('LOGIN: account is null (cancelled)');
         return;
       }
 
+      final GoogleSignInAuthentication auth = await account.authentication;
+      final String? idToken = auth.idToken;
+      final String? accessToken = auth.accessToken;
+      debugPrint('LOGIN: idToken is null? ${idToken==null}');
+      debugPrint('LOGIN: accessToken is null? ${accessToken==null}');
+      if (idToken == null || idToken.isEmpty) {
+        return;
+      }
+
+      final Uri authUri = Uri.parse(_googleAuthUrl);
+      debugPrint('LOGIN: backend url=$authUri');
       final response = await http.post(
-        Uri.parse(_googleAuthUrl),
+        authUri,
         headers: const {'Content-Type': 'application/json'},
         body: jsonEncode({'idToken': idToken}),
-      );
+      ).timeout(const Duration(seconds: 12));
+      final String bodySnippet = response.body.length > 200
+          ? response.body.substring(0, 200)
+          : response.body;
+      debugPrint('LOGIN: backend statusCode=${response.statusCode}');
+      debugPrint('LOGIN: backend bodySnippet=$bodySnippet');
       if (!context.mounted) return;
 
       if (response.statusCode != 200) {
@@ -53,12 +79,31 @@ class LoginScreen extends StatelessWidget {
           builder: (_) => const HomeScreen(),
         ),
       );
-    } catch (e) {
+    } on TimeoutException catch (e) {
+      debugPrint('LOGIN: timeout while calling backend: $e');
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Google giris zaman asimi')),
+      );
+    } on SocketException catch (e) {
+      debugPrint('LOGIN: socket error during login flow: $e');
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Ag baglanti hatasi')),
+      );
+    } on PlatformException catch (e) {
+      debugPrint('LOGIN: platform exception during Google sign-in: $e');
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Google giris hatasi')),
       );
-      debugPrint('Google sign-in exchange failed: $e');
+    } catch (e, st) {
+      debugPrint('LOGIN: unexpected error: $e');
+      debugPrint('LOGIN: stacktrace: $st');
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Google giris hatasi')),
+      );
     }
   }
 
@@ -78,4 +123,8 @@ class LoginScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+class GoogleLoginScreen extends LoginScreen {
+  GoogleLoginScreen({super.key});
 }

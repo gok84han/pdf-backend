@@ -41,7 +41,7 @@ class MeInfo {
 
 class MeService {
   MeService({
-    this.baseUrl = 'http://10.0.2.2:8787',
+    this.baseUrl = 'http://10.215.29.41:8787',
     http.Client? httpClient,
   }) : _httpClient = httpClient ?? http.Client();
 

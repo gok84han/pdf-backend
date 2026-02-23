@@ -9,7 +9,7 @@ class ApiClient {
     // Android Emulator uses 10.0.2.2 to access host machine
     // Real device can use 127.0.0.1 only with adb reverse
     // Do NOT change this unless backend connectivity is intentionally modified
-    static const String _baseUrl = 'http://10.0.2.2:8787';
+    static const String _baseUrl = 'http://10.215.29.41:8787';
 
 
   final http.Client _client;

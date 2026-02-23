@@ -4,7 +4,7 @@ info:
   version: 1.0.0
   description: API for retrieving user quota, extracting PDF metadata, and analyzing PDFs for summaries and actions.
 servers:
-  - url: http://10.0.2.2:8787
+  - url: https://pdf-backend-waba.onrender.com
 security:
   - bearerAuth: []
 paths:

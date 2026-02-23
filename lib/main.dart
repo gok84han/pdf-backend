@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'auth/auth_state.dart';
+import 'screens/login_screen.dart';
 
 void main() {
   runApp(const MyApp());
@@ -11,8 +11,8 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const MaterialApp(
-      home: AuthGate(),
+    return MaterialApp(
+      home: GoogleLoginScreen(),
     );
   }
 }

@@ -43,7 +43,7 @@ class _AuthGateState extends State<AuthGate> {
   @override
   void initState() {
     super.initState();
-    _tokenFuture = loadToken();
+    _tokenFuture = Future<String?>.value(null);
   }
 
   @override

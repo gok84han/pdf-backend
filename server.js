@@ -12,6 +12,10 @@ import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 
 dotenv.config();
+const JWT_SECRET = String(process.env.JWT_SECRET || "").trim();
+if (!JWT_SECRET) {
+  console.error("[FATAL] JWT_SECRET missing");
+}
 
 const PORT = process.env.PORT || 8787;
 const LOG_LEVEL = process.env.LOG_LEVEL || "info";
@@ -33,6 +37,7 @@ const AUTH_AUDIENCES = Array.from(
   new Set([...GOOGLE_CLIENT_IDS, ...(GOOGLE_CLIENT_ID ? [GOOGLE_CLIENT_ID] : [])])
 );
 const GOOGLE_ALLOWED_CLIENT_IDS = AUTH_AUDIENCES;
+const EXPECTED_AUDIENCE = GOOGLE_ALLOWED_CLIENT_IDS;
 const googleOAuthClient = new OAuth2Client();
 
 const app = express();
@@ -544,15 +549,16 @@ app.get("/health", (req, res) => {
 app.post("/auth/google", async (req, res) => {
   const idToken = String(req.body?.idToken ?? "").trim();
   if (!idToken) {
-    return res.status(401).json({ error: "UNAUTHORIZED" });
+    console.error("[AUTH_GOOGLE] missing idToken");
+    return res.status(401).json({ error: "UNAUTHORIZED", detail: "MISSING_ID_TOKEN" });
   }
 
-  const secret = String(process.env.JWT_SECRET || "").trim();
-  if (!secret) {
+  if (!JWT_SECRET) {
     return res.status(500).json({ error: "SERVER_ERROR", detail: "MISSING_JWT_SECRET" });
   }
 
   try {
+    console.error("[AUTH_GOOGLE] expected audience:", EXPECTED_AUDIENCE);
     const ticket = await googleOAuthClient.verifyIdToken({
       idToken,
       audience: GOOGLE_ALLOWED_CLIENT_IDS,
@@ -562,13 +568,21 @@ app.post("/auth/google", async (req, res) => {
     const email = String(payload?.email ?? "").trim();
 
     if (!sub) {
-      return res.status(401).json({ error: "UNAUTHORIZED" });
+      console.error("[AUTH_GOOGLE] missing sub in verified token payload");
+      return res.status(401).json({ error: "UNAUTHORIZED", detail: "MISSING_SUB" });
     }
 
-    const token = jwt.sign({ sub, email }, secret);
+    const token = jwt.sign({ sub, email }, JWT_SECRET);
     return res.json({ token });
-  } catch {
-    return res.status(401).json({ error: "UNAUTHORIZED" });
+  } catch (e) {
+    const reason = String(e?.message || "").slice(0, 200);
+    console.error("[AUTH_GOOGLE] verify failed:", reason);
+    console.error("[AUTH_GOOGLE] expected audience:", EXPECTED_AUDIENCE);
+    return res.status(401).json({
+      error: "UNAUTHORIZED",
+      detail: "GOOGLE_VERIFY_FAILED",
+      reason,
+    });
   }
 });
 
@@ -576,11 +590,10 @@ app.post("/dev/token", (req, res) => {
   if (!ALLOW_DEV_TOKEN) {
     return res.status(404).json({ error: "NOT_FOUND" });
   }
-  const secret = String(process.env.JWT_SECRET || "").trim();
-  if (!secret) {
+  if (!JWT_SECRET) {
     return res.status(500).json({ error: "SERVER_ERROR", detail: "MISSING_JWT_SECRET" });
   }
-  const token = jwt.sign({ sub: "dev-user-1" }, secret);
+  const token = jwt.sign({ sub: "dev-user-1" }, JWT_SECRET);
   return res.json({ token });
 });
 

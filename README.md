@@ -20,3 +20,6 @@ Debug backend plan activation flag:
 
 Debug log level:
 `LOG_LEVEL=debug`
+
+Render required env vars:
+- `JWT_SECRET`

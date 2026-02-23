@@ -10,7 +10,7 @@ class PdfAnalysisService {
   final http.Client _client;
 
   PdfAnalysisService({
-    this.baseUrl = 'http://10.0.2.2:8787',
+    this.baseUrl = 'http://10.215.29.41:8787',
     http.Client? client,
   }) : _client = client ?? http.Client();
 
