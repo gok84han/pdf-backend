@@ -10,11 +10,13 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
+import { franc } from "franc-min";
 
 dotenv.config();
 const JWT_SECRET = String(process.env.JWT_SECRET || "").trim();
 if (!JWT_SECRET) {
-  console.error("[FATAL] JWT_SECRET missing");
+  console.error("[FATAL] JWT_SECRET missing. Set process.env.JWT_SECRET before starting the server.");
+  process.exit(1);
 }
 
 const PORT = process.env.PORT || 8787;
@@ -28,17 +30,13 @@ const ALLOW_DEV_TOKEN =
   String(process.env.ALLOW_DEV_TOKEN || "")
     .trim()
     .toLowerCase() === "true";
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-const GOOGLE_CLIENT_IDS = String(process.env.GOOGLE_CLIENT_IDS || "")
-  .split(",")
-  .map((v) => v.trim())
-  .filter(Boolean);
-const AUTH_AUDIENCES = Array.from(
-  new Set([...GOOGLE_CLIENT_IDS, ...(GOOGLE_CLIENT_ID ? [GOOGLE_CLIENT_ID] : [])])
-);
-const GOOGLE_ALLOWED_CLIENT_IDS = AUTH_AUDIENCES;
-const EXPECTED_AUDIENCE = GOOGLE_ALLOWED_CLIENT_IDS;
+const GOOGLE_CLIENT_ID = String(process.env.GOOGLE_CLIENT_ID || "").trim();
+if (!GOOGLE_CLIENT_ID) {
+  console.error("[FATAL] GOOGLE_CLIENT_ID missing");
+}
+const EXPECTED_AUDIENCE = GOOGLE_CLIENT_ID;
 const googleOAuthClient = new OAuth2Client();
+const BUILD_ID = process.env.BUILD_ID || new Date().toISOString();
 
 const app = express();
 app.use(cors());
@@ -71,6 +69,15 @@ Your task is to analyze a document provided as plain text extracted from a PDF.
 You must NOT provide legal, medical, or financial advice.
 You must NOT assume facts that are not explicitly stated in the document.
 You must NOT hallucinate missing information.
+Detect the language of the provided document.
+Generate the full analysis in the SAME language as the document.
+Do NOT translate the content unless explicitly requested.
+All section titles must also match the document language.
+You must detect the document language and respond entirely in that same language.
+Do not default to English.
+If the document is Turkish, respond in Turkish.
+If English, respond in English.
+If another language, respond in that language.
 
 Your goal is NOT to summarize the document,
 but to extract decision-oriented insights that help a busy professional
@@ -118,10 +125,6 @@ const RISK_LABEL_TYPES = Object.freeze({
 });
 const ALLOWED_RISK_LABEL_TYPES = new Set(Object.keys(RISK_LABEL_TYPES));
 const ALLOWED_RISK_CONFIDENCE = new Set(["low", "medium", "high"]);
-const DISCLAIMER_SHORT =
-  "Bu icerik hukuki danismanlik degildir; yalnizca karar destek amacli otomatik etiketlemedir.";
-const DISCLAIMER_LONG =
-  "Bu cikti hukuki gorus veya danismanlik niteliginde degildir. Sistem, metindeki ifadelere dayali olasi risk etiketlerini gosterebilir; bir maddenin hukuka aykiri oldugunu iddia etmez ve imzalama karari onermez.";
 const RISK_LABELING_SYSTEM_PROMPT = `
 You are a contract risk label extractor.
 This is NOT legal advice.
@@ -131,8 +134,13 @@ Only identify phrases that may create risk in similar contracts.
 Return JSON only.
 `.trim();
 
-function buildUserPrompt(pdfText) {
+function buildUserPrompt(pdfText, outputLanguageName) {
   return `
+OUTPUT_LANGUAGE: ${outputLanguageName}
+You MUST write the entire response in OUTPUT_LANGUAGE.
+Do not translate to another language.
+All section titles and section content must be in OUTPUT_LANGUAGE.
+
 Analyze the following document text and produce the output strictly in the structure below.
 
 DOCUMENT TEXT:
@@ -172,6 +180,19 @@ RULES:
 - Do NOT add advice beyond the document.
 - Do NOT invent deadlines, responsibilities, or conclusions.
 - If the document is informational only, clearly state that no actions are required.
+`.trim();
+}
+
+function buildLanguageLockedSystemPrompt(outputLanguageName) {
+  return `
+You are a document analysis assistant.
+OUTPUT_LANGUAGE: ${outputLanguageName}
+RULE: Write the entire response ONLY in OUTPUT_LANGUAGE.
+You MUST write the entire response in OUTPUT_LANGUAGE.
+Do not translate to another language.
+If OUTPUT_LANGUAGE is Turkish, you MUST respond in Turkish. Do not use English.
+
+${SYSTEM_PROMPT}
 `.trim();
 }
 
@@ -244,6 +265,15 @@ function detectLanguageFallbackFromSummary(summarySections) {
         .join(" ")
     : "";
   return /[çğıöşüÇĞİÖŞÜ]/.test(text) ? "tr" : "en";
+}
+
+function detectOutputLanguage(text) {
+  const sample = String(text || "").slice(0, 5000);
+  const code3 = franc(sample, { minLength: 20 });
+  if (code3 === "tur") return { code: "tr", name: "Turkish" };
+  if (code3 === "eng") return { code: "en", name: "English" };
+  if (/[çğıöşüİÇĞÖŞÜ]/.test(sample)) return { code: "tr", name: "Turkish" };
+  return { code: "en", name: "English" };
 }
 
 // --- Helpers ---
@@ -546,6 +576,17 @@ app.get("/health", (req, res) => {
   res.json({ ok: true, service: "pdf-backend", port: PORT });
 });
 
+app.get("/__debug", (req, res) => {
+  res.setHeader("X-Build", BUILD_ID);
+  res.json({
+    ok: true,
+    build: BUILD_ID,
+    now: new Date().toISOString(),
+    jwtSecretLen: (process.env.JWT_SECRET || "").length,
+    nodeEnv: process.env.NODE_ENV || "",
+  });
+});
+
 app.post("/auth/google", async (req, res) => {
   const idToken = String(req.body?.idToken ?? "").trim();
   if (!idToken) {
@@ -561,7 +602,7 @@ app.post("/auth/google", async (req, res) => {
     console.error("[AUTH_GOOGLE] expected audience:", EXPECTED_AUDIENCE);
     const ticket = await googleOAuthClient.verifyIdToken({
       idToken,
-      audience: GOOGLE_ALLOWED_CLIENT_IDS,
+      audience: GOOGLE_CLIENT_ID,
     });
     const payload = ticket.getPayload();
     const sub = String(payload?.sub ?? "").trim();
@@ -598,9 +639,7 @@ app.post("/dev/token", (req, res) => {
 });
 
 app.get("/me", requireAuth, async (req, res) => {
-  if (isDebug) {
-    console.log("[AUTH DEBUG] method=", req.method, "path=", req.path, "authorization=", req.headers.authorization);
-  }
+  console.log(`[AUTHDBG] ${req.method} ${req.path} auth=${req.headers.authorization ?? "MISSING"}`);
   const userId = String(req.user?.sub ?? "");
   const email = req.user?.email ?? null;
   const plan = getUserPlan(userId);
@@ -661,9 +700,8 @@ app.post("/pdf/meta", requireAuth, upload.single("file"), async (req, res) => {
 });
 
 app.post("/analyze-pdf", requireAuth, requireAnalyzeQuota, upload.single("file"), async (req, res) => {
-  if (isDebug) {
-    console.log("[AUTH DEBUG] method=", req.method, "path=", req.path, "authorization=", req.headers.authorization);
-  }
+  res.setHeader("X-Build", BUILD_ID);
+  console.log(`[AUTHDBG] ${req.method} ${req.path} auth=${req.headers.authorization ?? "MISSING"}`);
   console.log("[HIT] /analyze-pdf", new Date().toISOString());
   console.log("[FILE]", req.file?.originalname, req.file?.size);
   let reservation = null;
@@ -673,6 +711,22 @@ app.post("/analyze-pdf", requireAuth, requireAnalyzeQuota, upload.single("file")
     allowEmpty: true,
   });
   const isProPlan = getUserPlan(userId) === "pro";
+  const userKey = String(req.user?.sub ?? req.user?.email ?? "").trim();
+  const baseUrlSeen = `${req.protocol}://${req.get("host")}${req.originalUrl}`;
+  const userLang = req.headers["accept-language"] || "en";
+  const isTurkish = String(userLang).toLowerCase().startsWith("tr");
+  console.warn("[QUOTA] In-memory quota storage active; values reset on server restart.");
+  let freeRemainingBefore = Math.max(
+    0,
+    MONTHLY_FREE_QUOTA - Number(req.currentMonthlyUsage ?? 0)
+  );
+  let freeRemainingAfter = freeRemainingBefore;
+  const disclaimerShort = isTurkish
+    ? "Bu içerik hukuki danışmanlık değildir; yalnızca karar destek amaçlı otomatik etiketlemedir."
+    : "This content is not legal advice; it is automated decision-support labeling.";
+  const disclaimerLong = isTurkish
+    ? "Bu çıktı hukuki görüş veya danışmanlık niteliğinde değildir. Sistem, metindeki ifadelere dayalı olası risk etiketlerini gösterebilir; bir maddenin hukuka aykırı olduğunu iddia etmez ve imzalama kararı önermez."
+    : "This output does not constitute legal advice or opinion. The system may highlight potential risk indicators based on the document text; it does not claim a clause is unlawful and does not recommend whether to sign.";
 
   try {
     if (!req.file) {
@@ -681,20 +735,54 @@ app.post("/analyze-pdf", requireAuth, requireAnalyzeQuota, upload.single("file")
     console.log("[UPLOAD] name=", req.file.originalname, "bytes=", req.file.size, "mime=", req.file.mimetype);
 
     const fileHash = crypto.createHash("sha256").update(req.file.buffer).digest("hex");
-    const cacheKey = `${userId}:${getCurrentMonthKey()}:${isProPlan ? "pro" : "free"}:${fileHash}`;
+    const cacheKey = `${userId}:${getCurrentMonthKey()}:${isProPlan ? "pro" : "free"}:${fileHash}:langlock_v1`;
     const cached = analyzeResultCache.get(cacheKey);
     if (cached?.resultJson) {
       if (isDebug) {
         console.log("[CACHE HIT]", cacheKey);
       }
-      const cachedResponseJson = isProPlan
+      const usageAfter = await incrementMonthlyUsage(userId);
+      freeRemainingAfter = Math.max(0, MONTHLY_FREE_QUOTA - usageAfter);
+      const cachedResponseJsonBase = isProPlan
         ? cached.resultJson
         : { ...cached.resultJson, riskLabels: [] };
+      const cachedResponseJson = {
+        ...cachedResponseJsonBase,
+        language: String(cachedResponseJsonBase.language ?? cachedResponseJsonBase.detected_language ?? "en"),
+        freeRemainingBefore,
+        freeRemainingAfter,
+        disclaimer_short: disclaimerShort,
+        disclaimer_long: disclaimerLong,
+        debug: {
+          build: BUILD_ID,
+          baseUrlSeen,
+          langDetected: String(cachedResponseJsonBase?.debug?.langDetected ?? cachedResponseJsonBase.language ?? "en"),
+          langOutput: String(cachedResponseJsonBase?.debug?.langOutput ?? cachedResponseJsonBase.detected_language ?? "en"),
+          freeBefore: freeRemainingBefore,
+          freeAfter: freeRemainingAfter,
+          userKey: userKey ? "present" : "missing",
+        },
+      };
       return res.status(200).json(cachedResponseJson);
     }
     if (!req.hasAnalyzeQuota) {
-      return res.status(403).json({ error: "QUOTA_EXCEEDED", limit: MONTHLY_FREE_QUOTA });
+      return res.status(403).json({
+        error: "QUOTA_EXCEEDED",
+        limit: MONTHLY_FREE_QUOTA,
+        freeRemainingBefore,
+        freeRemainingAfter,
+        debug: {
+          build: BUILD_ID,
+          baseUrlSeen,
+          freeBefore: freeRemainingBefore,
+          freeAfter: freeRemainingAfter,
+          userKey: userKey ? "present" : "missing",
+        },
+      });
     }
+
+    const usageAfter = await incrementMonthlyUsage(userId);
+    freeRemainingAfter = Math.max(0, MONTHLY_FREE_QUOTA - usageAfter);
 
     reservation = await reserveQuota({ userId, units: 1 });
     job = createAnalysisJob(reservation.id);
@@ -719,6 +807,8 @@ app.post("/analyze-pdf", requireAuth, requireAnalyzeQuota, upload.single("file")
           badPdfError.code = "BAD_REQUEST";
           throw badPdfError;
         }
+        const langDetected = detectOutputLanguage(cleaned);
+        console.log("[LANG DETECT] input=", langDetected.code, langDetected.name);
 
         const docTypePrompt = buildDocumentTypePrompt(cleaned);
         const docTypeOut = await callOpenAI({
@@ -734,13 +824,26 @@ app.post("/analyze-pdf", requireAuth, requireAnalyzeQuota, upload.single("file")
           parsedDocTypeResult?.detected_language ?? ""
         ).trim();
 
-        const userPrompt = buildUserPrompt(cleaned);
-        const out = await callOpenAI({ system: SYSTEM_PROMPT, user: userPrompt });
+        const userPrompt = buildUserPrompt(cleaned, langDetected.name);
+        const analysisSystemPrompt = buildLanguageLockedSystemPrompt(langDetected.name);
+        let out = await callOpenAI({ system: analysisSystemPrompt, user: userPrompt });
+        let outputLang = detectOutputLanguage(out).code;
+
+        if (langDetected.code === "tr" && outputLang !== "tr") {
+          console.warn("[LANG RETRY] mismatch detected, retrying with Turkish hard lock");
+          const retrySystemPrompt = `${analysisSystemPrompt}
+CRITICAL: Your previous answer was wrong because it was not Turkish. Rewrite fully in Turkish.`;
+          out = await callOpenAI({ system: retrySystemPrompt, user: userPrompt });
+          outputLang = detectOutputLanguage(out).code;
+        }
+        console.log("[LANG OUTPUT] detected=", langDetected.code, "output=", outputLang);
         return {
           cleaned,
           out,
           detectedDocumentType,
           detectedLanguageFromDocType,
+          langDetected,
+          outputLang,
         };
       })(),
       ANALYSIS_TIMEOUT_MS
@@ -784,12 +887,15 @@ app.post("/analyze-pdf", requireAuth, requireAnalyzeQuota, upload.single("file")
           ? [{ title: "Özet", content: legacySummary }]
           : [];
 
-    let detectedLanguage = String(
-      parsedResult?.detected_language ??
-        parsedResult?.language ??
-        analysis.detectedLanguageFromDocType ??
-        ""
-    ).trim();
+    let detectedLanguage = String(analysis.langDetected?.code ?? "").trim();
+    if (!detectedLanguage) {
+      detectedLanguage = String(
+        parsedResult?.detected_language ??
+          parsedResult?.language ??
+          analysis.detectedLanguageFromDocType ??
+          ""
+      ).trim();
+    }
     if (!detectedLanguage) {
       detectedLanguage = detectLanguageFallbackFromSummary(normalizedSummarySections);
     }
@@ -840,13 +946,25 @@ app.post("/analyze-pdf", requireAuth, requireAnalyzeQuota, upload.single("file")
     }
 
     const resultJson = {
+      language: String(analysis.langDetected?.code ?? detectedLanguage ?? "en"),
       detected_language: detectedLanguage,
       document_type: normalizedDocumentType,
+      freeRemainingBefore,
+      freeRemainingAfter,
       summary: { sections: normalizedSummarySections },
       key_points: keyPoints,
       actions,
-      disclaimer_short: DISCLAIMER_SHORT,
-      disclaimer_long: DISCLAIMER_LONG,
+      disclaimer_short: disclaimerShort,
+      disclaimer_long: disclaimerLong,
+      debug: {
+        build: BUILD_ID,
+        baseUrlSeen,
+        langDetected: String(analysis.langDetected?.code ?? detectedLanguage ?? "en"),
+        langOutput: String(analysis.outputLang ?? "en"),
+        freeBefore: freeRemainingBefore,
+        freeAfter: freeRemainingAfter,
+        userKey: userKey ? "present" : "missing",
+      },
       riskLabels,
       risk_analysis: {
         enabled: shouldRunRiskLabeling,
@@ -857,7 +975,6 @@ app.post("/analyze-pdf", requireAuth, requireAnalyzeQuota, upload.single("file")
     const responseJson = isProPlan
       ? resultJson
       : { ...resultJson, riskLabels: [] };
-    await incrementMonthlyUsage(userId);
     setAnalyzeCache(cacheKey, resultJson);
     return res.status(200).json(responseJson);
   } catch (e) {

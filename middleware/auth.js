@@ -1,24 +1,28 @@
 import jwt from "jsonwebtoken";
 
 function requireAuth(req, res, next) {
-  const header = req.headers.authorization;
+  const auth = req.headers.authorization || "";
+  const hasAuthHeader = auth.startsWith("Bearer ");
+  const token = hasAuthHeader ? auth.slice(7) : "";
+  const tokenParts = token ? token.split(".").length : 0;
+  const jwtSecret = String(process.env.JWT_SECRET || "");
+  const jwtSecretLen = jwtSecret.length;
 
-  if (!header) {
-    return res.status(401).json({ error: "UNAUTHORIZED" });
-  }
+  console.log(
+    `[AUTHDBG] ${req.method} ${req.path} hasAuthHeader=${hasAuthHeader} tokenParts=${tokenParts} jwtSecretLen=${jwtSecretLen}`
+  );
 
-  const [scheme, token] = header.split(" ");
-
-  if (scheme !== "Bearer" || !token) {
-    return res.status(401).json({ error: "UNAUTHORIZED" });
+  if (!hasAuthHeader || !token || tokenParts !== 3) {
+    return res.status(401).json({ error: "unauthorized" });
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, jwtSecret);
     req.user = decoded;
-    next();
-  } catch {
-    return res.status(401).json({ error: "UNAUTHORIZED" });
+    return next();
+  } catch (err) {
+    console.log(`[AUTHDBG] ${req.method} ${req.path} verifyError=${err.message}`);
+    return res.status(401).json({ error: "unauthorized" });
   }
 }
 

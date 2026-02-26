@@ -1,6 +1,8 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:pdf/core/config.dart';
 
 import '../auth/auth_state.dart';
 
@@ -41,23 +43,49 @@ class MeInfo {
 
 class MeService {
   MeService({
-    this.baseUrl = 'http://10.215.29.41:8787',
     http.Client? httpClient,
   }) : _httpClient = httpClient ?? http.Client();
 
-  final String baseUrl;
   final http.Client _httpClient;
+
+  void _logRequestDebug({
+    required String method,
+    required String fullUrl,
+    required Map<String, String> headers,
+  }) {
+    final authHeader = headers['Authorization'] ?? '';
+    final hasAuthHeader = authHeader.startsWith('Bearer ');
+    final token = hasAuthHeader ? authHeader.substring(7).trim() : '';
+    final tokenParts = token.isEmpty ? 0 : token.split('.').length;
+    final tokenLen = token.length;
+    debugPrint(
+      'HTTPDBG fullUrl=$fullUrl method=$method hasAuthHeader=$hasAuthHeader tokenParts=$tokenParts tokenLen=$tokenLen',
+    );
+    if (tokenParts != 0 && tokenParts != 3) {
+      debugPrint('HTTPDBG INVALID TOKEN FORMAT');
+      throw Exception('INVALID TOKEN FORMAT');
+    }
+  }
 
   Future<MeInfo> getMe() async {
     final String? idToken = await loadToken();
 
-    final Uri uri = Uri.parse('$baseUrl/me');
+    final fullUrl = '${AppConfig.baseUrl}/me';
+    final Uri uri = Uri.parse(fullUrl);
+    final headers = <String, String>{
+      'Authorization': 'Bearer ${idToken ?? ""}',
+      'Accept': 'application/json',
+    };
+    _logRequestDebug(method: 'GET', fullUrl: fullUrl, headers: headers);
     final http.Response response = await _httpClient.get(
       uri,
-      headers: <String, String>{
-        'Authorization': 'Bearer ${idToken ?? ""}',
-      },
+      headers: headers,
     );
+    final String bodySnippet = response.body.length > 120
+        ? response.body.substring(0, 120)
+        : response.body;
+    print('ME_SERVICE: /me status=${response.statusCode}');
+    print('ME_SERVICE: /me bodySnippet=$bodySnippet');
 
     if (response.statusCode != 200) {
       throw Exception('GET /me failed: ${response.statusCode}');
