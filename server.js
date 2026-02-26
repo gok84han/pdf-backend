@@ -573,7 +573,8 @@ async function callOpenAI({ system, user }) {
 
 // --- Routes ---
 app.get("/health", (req, res) => {
-  res.json({ ok: true, service: "pdf-backend", port: PORT });
+  res.setHeader("X-Build", BUILD_ID);
+  res.json({ ok: true, service: "pdf-backend", port: PORT, build: BUILD_ID });
 });
 
 app.get("/__debug", (req, res) => {
